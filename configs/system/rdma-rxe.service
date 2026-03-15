@@ -1,0 +1,14 @@
+# /etc/systemd/system/rdma-rxe.service
+# Creates Soft-RoCE RDMA device over thunderbolt0 at boot
+[Unit]
+Description=Soft-RoCE (RXE) RDMA over Thunderbolt
+After=network-online.target sys-subsystem-rdma-devices-rxe0.device
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/rdma link add rxe0 type rxe netdev thunderbolt0
+
+[Install]
+WantedBy=multi-user.target

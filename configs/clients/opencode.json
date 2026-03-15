@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "strix-halo": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Strix Halo Cluster",
+      "options": {
+        "baseURL": "http://<head-node-ip>:8080/v1",
+        "apiKey": "dummy"
+      },
+      "models": {
+        "MiniMax-M2.5-UD-Q6_K_XL-00001-of-00005.gguf": {
+          "name": "MiniMax-M2.5 UD-Q6_K_XL (2-node distributed)",
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
+        }
+      }
+    }
+  },
+  "model": "strix-halo/MiniMax-M2.5-UD-Q6_K_XL-00001-of-00005.gguf"
+}

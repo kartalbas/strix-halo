@@ -1,24 +1,35 @@
-# Distributed llama.cpp Inference on Strix Halo
+# Dual-Node MiniMax M2.5 229B Inference — 2x Minisforum MS-S1 MAX (AMD Strix Halo) over USB4 Thunderbolt
 
-Run **MiniMax M2.5 229B** (MoE, 10B active) at **~13 tok/s generation** and **~195 tok/s prompt processing** using two consumer mini PCs connected over a USB4 v2 Thunderbolt cable. Total hardware cost under $3,000 — no cloud GPU required.
+Run [**MiniMax M2.5 229B**](https://huggingface.co/MiniMaxAI) — the 229-billion-parameter Mixture-of-Experts LLM by **MiniMax (稀宇科技)** — locally on two **Minisforum MS-S1 MAX** mini PCs using distributed [**llama.cpp**](https://github.com/ggml-org/llama.cpp) with the **Vulkan** (RADV) backend and **RPC** layer splitting over a **USB4 v2 Thunderbolt** cable. No cloud GPUs, no NVIDIA — just two AMD APUs with 256 GB of unified memory.
+
+**~13 tok/s generation | ~195 tok/s prompt processing | 131K context | under $3,000 total hardware cost**
 
 | Metric | Value |
 |---|---|
-| Model | MiniMax-M2.5 229B (32 experts, 2 active per token, 61 layers) |
-| Quantization | UD-Q6_K_XL (~181 GB) |
+| Model | [MiniMax-M2.5](https://huggingface.co/MiniMaxAI/MiniMax-M2.5) 229B (MoE: 32 experts, 2 active per token, 61 layers) |
+| Developer | [MiniMax (稀宇科技)](https://www.minimax.io/) |
+| Quantization | UD-Q6_K_XL via [unsloth](https://huggingface.co/unsloth/MiniMax-M2.5-GGUF) (~181 GB GGUF) |
+| Nodes | 2x [Minisforum MS-S1 MAX](https://www.minisforum.com/) |
+| CPU | AMD Ryzen AI MAX+ 395 (Strix Halo) — 16C/32T Zen 5 |
+| iGPU | Radeon 8060S — 40 CUs, RDNA 3.5, up to 112 GB VRAM per node |
+| Memory | 128 GB LPDDR5x-8000 unified memory per node (~256 GB/s) |
+| Backend | Vulkan (RADV / Mesa) — no ROCm or CUDA required |
+| Interconnect | USB4 v2 Thunderbolt (rear ports), ~38 Gbps measured |
+| Distributed inference | llama.cpp RPC — 2-node tensor-parallel split (`-ts 1,1`) |
 | Generation speed | ~13 tok/s |
 | Prompt processing | ~195 tok/s |
 | Context window | 131K tokens (q8_0 KV cache) |
 | SWE-bench Verified | 80.2% (per MiniMax) |
-| Hardware cost | ~$2,800 (2x MS-S1 MAX + USB4 v2 cable) |
-| Interconnect | USB4 v2 rear ports, ~38 Gbps measured |
-| Backend | Vulkan (RADV driver) |
+| Total hardware cost | ~$2,800 (2x MS-S1 MAX + USB4 v2 cable) |
+| Power consumption | ~100W combined (both nodes) |
 
-For comparison, cloud GPU inference for a 229B parameter model typically requires multiple A100/H100 GPUs at $2-8/hour. This setup runs 24/7 on hardware you own, with no recurring costs beyond electricity (~100W combined).
+For comparison, cloud GPU inference for a 229B parameter model typically requires multiple NVIDIA A100/H100 GPUs at $2-8/hour. This setup runs 24/7 on hardware you own, with no recurring costs beyond electricity.
+
+> **Who is this for?** Anyone who wants to run frontier-class LLMs locally — AI developers, researchers, self-hosters, home lab enthusiasts — without spending $10K+ on NVIDIA GPUs or paying per-token cloud API fees. The entire setup is automated by a single management script.
 
 ---
 
-## Hardware Requirements
+## Hardware — 2x Minisforum MS-S1 MAX (AMD Ryzen AI MAX+ 395)
 
 ### Bill of Materials
 
@@ -28,17 +39,17 @@ For comparison, cloud GPU inference for a 229B parameter model typically require
 | USB4 v2 Thunderbolt cable | 80 Gbps rated, 0.5-1m recommended | 1 | Must use **rear ports** only |
 | Ethernet | Standard CAT6 or existing LAN | 1 | Required for SSH between nodes and API access |
 
-### CPU and GPU Details
+### Strix Halo APU — Radeon 8060S iGPU (RDNA 3.5, Vulkan)
 
 The AMD Ryzen AI MAX+ 395 (Strix Halo) integrates a Radeon 8060S iGPU with 40 RDNA 3.5 compute units. The unified memory architecture shares the 128 GB LPDDR5x-8000 pool between CPU and GPU — there is no separate VRAM chip, so both allocations run at the same ~256 GB/s bandwidth. By default, we configure 96 GB VRAM per node (192 GB total) via a static BIOS setting. For more headroom, dynamic GTT allocation via kernel parameters can provide up to 112 GB per node (224 GB total). See [docs/hardware.md](docs/hardware.md#uma--vram-allocation) for both approaches.
 
-### BIOS Details
+### BIOS Settings (AMI, UMA Frame Buffer, VRAM Allocation)
 
 - **Board**: SHWSA
 - **BIOS vendor**: AMI, version 1.06 or later
 - **Key setting**: UMA Frame Buffer Size must be set to 96 GB (see Prerequisites below)
 
-### USB4 v2 Port Warning
+### USB4 v2 vs v1 Ports — Thunderbolt Bandwidth
 
 The MS-S1 MAX has two classes of USB4 ports:
 
@@ -51,11 +62,11 @@ Always connect the Thunderbolt cable to the **rear USB4 v2 ports**. The front po
 
 ---
 
-## Prerequisites
+## Prerequisites (BIOS, Fedora, SSH, USB4 Cable)
 
 Only four things require manual configuration. Everything else is handled by `llm-server.sh setup` subcommands.
 
-### 3a. BIOS Configuration
+### 3a. BIOS Configuration (iGPU VRAM, Thunderbolt)
 
 Power on each machine and enter BIOS setup (press `DEL` during POST). For BIOS updates, see [capetron/minisforum-ms-s1-max-bios](https://github.com/capetron/minisforum-ms-s1-max-bios/tree/main).
 
@@ -72,7 +83,7 @@ Power on each machine and enter BIOS setup (press `DEL` during POST). For BIOS u
 
 3. **Save and exit** BIOS.
 
-### 3b. Install Fedora 43 Server
+### 3b. Install Fedora 43 Server + Kernel Upgrade
 
 Install Fedora 43 Server on both machines. A minimal server installation is sufficient — no desktop environment is needed. Create the same user account on both machines (e.g., `mkadm`).
 
@@ -116,7 +127,7 @@ ssh <worker-ip> hostname    # should print worker's hostname
 ssh <head-ip> hostname      # should print head's hostname
 ```
 
-### 3d. USB4 v2 Cable in Rear Ports
+### 3d. USB4 v2 Thunderbolt Cable (Rear Ports Only)
 
 Connect a USB4 v2 (80 Gbps) Thunderbolt cable between the **rear** USB4 v2 ports of both machines. The cable should be 0.5m to 1m for best signal integrity.
 
@@ -130,7 +141,7 @@ Do not use an adapter or hub — the cable must connect directly between the two
 
 ---
 
-## Setup via llm-server.sh
+## Automated Setup — llm-server.sh (Vulkan, RPC, Thunderbolt Networking)
 
 The `llm-server.sh` script automates all remaining setup. Copy it to your home directory on `max1` (the head node):
 
@@ -159,7 +170,7 @@ The Thunderbolt IPs default to `10.0.0.1` (head) and `10.0.0.2` (worker) — the
 ~/llm-server.sh set worker-tb 10.0.0.2     # default, usually no need to change
 ```
 
-### 4b. Install Dependencies
+### 4b. Install Dependencies (Vulkan SDK, Mesa RADV, Build Tools)
 
 ```bash
 ~/llm-server.sh setup deps
@@ -204,7 +215,7 @@ GPU0:
     driverName    = radv
 ```
 
-### 4c. Configure USB4 v2 Networking
+### 4c. Configure USB4 v2 Thunderbolt Networking (Node-to-Node)
 
 ```bash
 ~/llm-server.sh setup thunderbolt
@@ -259,7 +270,7 @@ This sets up Soft-RoCE (software RDMA over Converged Ethernet) on both nodes:
 
 **Note**: llama.cpp RPC currently uses TCP, not RDMA. This step is future-proofing for when llama.cpp gains native RDMA support, which would reduce latency and CPU overhead for tensor transfers. It is optional but harmless to configure now.
 
-### 4e. Build llama.cpp
+### 4e. Build llama.cpp (Vulkan + RPC Backends)
 
 ```bash
 ~/llm-server.sh setup build
@@ -338,9 +349,9 @@ After setup completes, proceed to download a model and start serving.
 
 ---
 
-## Model Download and Server Operation
+## Model Download and Distributed Inference
 
-### 5a. Search and Download Models
+### 5a. Search and Download GGUF Models from HuggingFace
 
 Search HuggingFace for GGUF models:
 ```bash
@@ -423,7 +434,7 @@ Thunderbolt connectivity test complete
 
 If bandwidth is below 20 Gbps, check that you are using the rear USB4 v2 ports, not the front USB4 v1 ports.
 
-### 5d. Install Distributed Services
+### 5d. Install Distributed Services (RPC Server + llama-server)
 
 ```bash
 ~/llm-server.sh dist-install
@@ -533,9 +544,9 @@ This stops all running services, disables them, and removes the unit files from 
 
 ---
 
-## Architecture Explained
+## Architecture — Distributed llama.cpp RPC over USB4 Thunderbolt
 
-### Three-Process Architecture
+### Three-Process Architecture (2x rpc-server + llama-server)
 
 Distributed inference uses three cooperating processes across two machines:
 
@@ -557,7 +568,7 @@ Distributed inference uses three cooperating processes across two machines:
 
 2. **llama-server** (on max1 only) — the orchestrator. It loads the model, splits layers evenly across the two RPC backends (`-ts 1,1`), and serves an OpenAI-compatible API on port 8080.
 
-### Why USB4 v2?
+### Why USB4 v2 Thunderbolt? (Interconnect Bandwidth Comparison)
 
 The bottleneck in distributed inference is moving tensor data between nodes. During each forward pass, intermediate activations must cross the interconnect. USB4 v2 provides ~38 Gbps measured throughput, which is sufficient for MoE models where only 2 of 32 experts are active per token — the amount of data transferred per token is relatively small compared to a dense 229B model.
 
@@ -567,7 +578,7 @@ For comparison:
 - 100GbE: ~90 Gbps — would be faster but requires NICs and a switch
 - InfiniBand: ~200+ Gbps — overkill for this use case and prohibitively expensive
 
-### Key Flags
+### Key llama.cpp Flags for Distributed Vulkan Inference
 
 | Flag | Value | Purpose |
 |---|---|---|
@@ -582,7 +593,7 @@ For comparison:
 | `-np 1` | (set) | Single parallel slot (all context allocated to one user) |
 | `-b 4096` | (set) | Batch size for prompt processing |
 
-### How Layer Splitting Works
+### How Tensor-Parallel Layer Splitting Works (MoE)
 
 With `-ts 1,1`, llama.cpp distributes the 61 model layers approximately evenly across the two RPC backends (~30-31 layers each). During inference:
 
@@ -697,7 +708,7 @@ Both GPUs should show high VRAM usage (~89-93 GB each) when the model is loaded.
 | `status` | Show active model and service status |
 | `logs [-f]` | Show logs (`-f` to follow live) |
 
-### Distributed Mode (2-Node RPC)
+### Distributed Mode (Dual-Node RPC over Thunderbolt)
 
 | Command | Description |
 |---|---|
@@ -754,9 +765,9 @@ Both GPUs should show high VRAM usage (~89-93 GB each) when the model is loaded.
 
 ---
 
-## Client Configuration
+## Client Configuration (OpenAI-Compatible API)
 
-### OpenAI-Compatible API
+### OpenAI-Compatible API (Chat, Completions, Models)
 
 The llama-server exposes an OpenAI-compatible API at `http://<head-node-ip>:8080/v1`. Any client that supports the OpenAI API format can connect.
 
@@ -796,7 +807,7 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-### opencode Configuration
+### OpenCode AI Coding Assistant Configuration
 
 For [opencode](https://opencode.ai), create or edit `opencode.json` in your project directory:
 
@@ -830,9 +841,9 @@ See `configs/clients/opencode.json` for the full example.
 
 ---
 
-## Benchmarks
+## Benchmarks — MiniMax M2.5 229B on Dual Strix Halo
 
-### Summary
+### Performance Summary
 
 | Test | Result |
 |---|---|
@@ -851,7 +862,7 @@ For detailed benchmark results across different context sizes, quantizations, an
 
 ---
 
-## Troubleshooting
+## Troubleshooting (Thunderbolt, VRAM, RPC, Vulkan)
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -892,6 +903,26 @@ For a comprehensive troubleshooting guide, see [docs/troubleshooting.md](docs/tr
 
 ---
 
+## References and Related Projects
+
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — the inference engine powering this setup
+- [MiniMax (稀宇科技)](https://www.minimax.io/) — developer of the MiniMax-M2.5 229B model
+- [MiniMax-M2.5 on HuggingFace](https://huggingface.co/MiniMaxAI/MiniMax-M2.5) — official model page
+- [unsloth GGUF quants](https://huggingface.co/unsloth/MiniMax-M2.5-GGUF) — quantized GGUF files used here
+- [Minisforum MS-S1 MAX](https://www.minisforum.com/) — the hardware platform
+- [AMD ROCm: Strix Halo optimization](https://rocm.docs.amd.com/en/latest/how-to/system-optimization/strixhalo.html) — official memory management guide
+- [Jeff Geerling: VRAM allocation on AMD AI APUs](https://www.jeffgeerling.com/blog/2025/increasing-vram-allocation-on-amd-ai-apus-under-linux/) — GTT testing and limits
+- [Framework Community: Strix Halo LLM tests](https://community.frame.work/t/amd-strix-halo-ryzen-ai-max-395-gpu-llm-performance-tests/72521) — community benchmarks
+- [AMD: Trillion-parameter LLM on Ryzen AI Max+](https://www.amd.com/en/developer/resources/technical-articles/2026/how-to-run-a-one-trillion-parameter-llm-locally-an-amd.html) — AMD's multi-node guide
+
+See [docs/hardware.md](docs/hardware.md#references) for the full reference list.
+
+---
+
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+---
+
+<sub>**Keywords**: AMD Strix Halo, Ryzen AI MAX+ 395, Minisforum MS-S1 MAX, Radeon 8060S, RDNA 3.5, Vulkan RADV, llama.cpp, distributed inference, RPC server, dual node, two node, multi-node, USB4 v2, Thunderbolt, MiniMax M2.5, MiniMax 稀宇科技, 229B, Mixture of Experts, MoE, GGUF, LPDDR5x, unified memory, 128GB, 256GB, iGPU, local LLM, self-hosted AI, OpenAI compatible API, tensor parallel, layer splitting, no cloud GPU, consumer hardware, mini PC, home lab, llama-server, rpc-server</sub>

@@ -24,13 +24,13 @@ For comparison, cloud GPU inference for a 229B parameter model typically require
 
 | Component | Specification | Qty | Notes |
 |---|---|---|---|
-| Minisforum MS-S1 MAX | AMD Ryzen AI MAX+ 395 (Strix Halo), 128 GB LPDDR5x-8000 | 2 | Each configured with 96 GB iGPU VRAM + 32 GB system RAM |
+| Minisforum MS-S1 MAX | AMD Ryzen AI MAX+ 395 (Strix Halo), 128 GB LPDDR5x-8000 | 2 | 96 GB iGPU VRAM (BIOS) or up to 112 GB ([dynamic GTT](docs/hardware.md#approach-2-dynamic-gtt-advanced--more-vram)) |
 | USB4 v2 Thunderbolt cable | 80 Gbps rated, 0.5-1m recommended | 1 | Must use **rear ports** only |
 | Ethernet | Standard CAT6 or existing LAN | 1 | Required for SSH between nodes and API access |
 
 ### CPU and GPU Details
 
-The AMD Ryzen AI MAX+ 395 (Strix Halo) integrates a Radeon 8060S iGPU with 40 RDNA 3.5 compute units. The unified memory architecture shares the 128 GB LPDDR5x-8000 pool between CPU and GPU. By configuring the UMA frame buffer to 96 GB in BIOS, each machine provides 96 GB of usable VRAM, for a combined 192 GB across the two-node cluster.
+The AMD Ryzen AI MAX+ 395 (Strix Halo) integrates a Radeon 8060S iGPU with 40 RDNA 3.5 compute units. The unified memory architecture shares the 128 GB LPDDR5x-8000 pool between CPU and GPU — there is no separate VRAM chip, so both allocations run at the same ~256 GB/s bandwidth. By default, we configure 96 GB VRAM per node (192 GB total) via a static BIOS setting. For more headroom, dynamic GTT allocation via kernel parameters can provide up to 112 GB per node (224 GB total). See [docs/hardware.md](docs/hardware.md#uma--vram-allocation) for both approaches.
 
 ### BIOS Details
 
@@ -59,10 +59,11 @@ Only four things require manual configuration. Everything else is handled by `ll
 
 Power on each machine and enter BIOS setup (press `DEL` during POST). For BIOS updates, see [capetron/minisforum-ms-s1-max-bios](https://github.com/capetron/minisforum-ms-s1-max-bios/tree/main).
 
-1. **Set iGPU VRAM to 96 GB**:
+1. **Set iGPU VRAM to 96 GB** (default approach):
    ```
    Advanced → AMD CBS → NBIO → GFX Configuration → UMA Frame Buffer Size → 96GB
    ```
+   This allocates 96 GB to the iGPU and leaves 32 GB for the OS. For more VRAM (104-112 GB) using dynamic GTT allocation via kernel parameters, see [docs/hardware.md](docs/hardware.md#approach-2-dynamic-gtt-advanced--more-vram).
 
 2. **Enable Thunderbolt** (should be enabled by default):
    ```
@@ -857,7 +858,7 @@ For detailed benchmark results across different context sizes, quantizations, an
 | `thunderbolt0` interface missing | Kernel module not loaded or cable not detected | `sudo modprobe thunderbolt_net` and check cable seating |
 | Bandwidth < 20 Gbps | Using front USB4 v1 port | Move cable to rear USB4 v2 port |
 | RPC timeout on startup | max2 RPC not started or firewall blocking | Check `dist-status`, verify port 50052 is open |
-| `VRAM allocation failed` | UMA frame buffer not set to 96 GB | Set in BIOS: Advanced, AMD CBS, NBIO, GFX Configuration, 96 GB |
+| `VRAM allocation failed` | UMA frame buffer not set correctly | Static: set to 96 GB in BIOS. Dynamic GTT: check `ttm.pages_limit` kernel param. See [docs/hardware.md](docs/hardware.md) |
 | Segfault or crash on load | Missing `--no-mmap` flag | Ensure `--no-mmap` is set (automatic with `dist-install`) |
 | Double VRAM usage on max1 | `GGML_VK_VISIBLE_DEVICES` not empty | Ensure the env var is set to empty string (automatic with `dist-install`) |
 | Slow generation (<8 tok/s) | KV cache using f16 instead of q8_0 | `~/llm-server.sh set kv-cache q8_0` then `dist-install` and `dist-restart` |

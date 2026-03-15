@@ -13,6 +13,7 @@
           "name": "MiniMax-M2.5 UD-Q6_K_XL (2-node distributed)",
           "limit": {
             "context": 131072,
+            "input": 131072,
             "output": 32768
           }
         }

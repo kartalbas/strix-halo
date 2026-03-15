@@ -90,7 +90,38 @@ loginctl enable-linger $USER
 
 The `dist-install` command in `llm-server.sh` enables this automatically.
 
-## 8. ROCm/HIP Build Issues
+## 8. Dynamic GTT Segfaults or OOM
+
+**Symptom:** System crashes, segfaults, or OOM kills when using dynamic GTT allocation (`ttm.pages_limit`) at high values (>108 GB).
+
+**Cause:** Leaving too little RAM for the OS and llama-server orchestrator. The head node typically needs ~15 GB for the OS + orchestrator + SSH + system services.
+
+**Fix:** Reduce the GTT allocation. Start conservative and increase gradually:
+
+```bash
+# Safe: 104 GB VRAM, 24 GB for OS
+sudo grubby --update-kernel=ALL --args="ttm.pages_limit=27262976"
+
+# Moderate: 108 GB VRAM, 20 GB for OS
+sudo grubby --update-kernel=ALL --args="ttm.pages_limit=28311552"
+
+# Aggressive: 112 GB VRAM, 16 GB for OS
+sudo grubby --update-kernel=ALL --args="ttm.pages_limit=29360128"
+```
+
+Monitor OS memory after booting: `free -h`. If "available" is below 2 GB during inference, reduce the allocation. See [docs/hardware.md](hardware.md#approach-2-dynamic-gtt-advanced--more-vram) for details and tested limits.
+
+**References:** [Jeff Geerling's testing](https://www.jeffgeerling.com/blog/2025/increasing-vram-allocation-on-amd-ai-apus-under-linux/), [Framework community](https://community.frame.work/t/igpu-vram-how-much-can-be-assigned/73081)
+
+## 9. Slow Model Loading on Vulkan (>64 GB)
+
+**Symptom:** Model loading takes significantly longer than expected (several minutes instead of ~90 seconds) when the model exceeds ~64 GB.
+
+**Cause:** Known Vulkan/RADV issue with large memory allocations. See [llama.cpp #14854](https://github.com/ggml-org/llama.cpp/issues/14854).
+
+**Workaround:** This primarily affects initial load time, not inference speed. Wait for the load to complete — once loaded, inference runs at normal speed. Newer Mesa/RADV versions may improve this.
+
+## 10. ROCm/HIP Build Issues
 
 **Symptom:** Build failures or runtime errors when compiling llama.cpp with HIP support.
 

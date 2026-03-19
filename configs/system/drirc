@@ -1,0 +1,21 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Mesa/RADV configuration for AMD APUs (Strix Halo)
+     Install to: ~/.drirc
+
+     By default, RADV splits GTT memory into 2/3 device-local + 1/3 host-visible.
+     On APUs with unified memory, this wastes ~1/3 of VRAM (e.g., 120 GB GTT
+     becomes only 80 GB usable). This option forces all memory into a single
+     device-local heap, which is safe because all memory is physically the same
+     LPDDR5x pool.
+
+     Required when using dynamic GTT allocation (ttm.pages_limit).
+     Not needed when using static BIOS UMA allocation (e.g., 96 GB).
+
+     See: https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/18884 -->
+<driconf>
+    <device driver="radv">
+        <application name="Default">
+            <option name="radv_enable_unified_heap_on_apu" value="true" />
+        </application>
+    </device>
+</driconf>

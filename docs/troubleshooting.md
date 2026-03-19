@@ -90,7 +90,37 @@ loginctl enable-linger $USER
 
 The `dist-install` command in `llm-server.sh` enables this automatically.
 
-## 8. Dynamic GTT Segfaults or OOM
+## 8. RADV Heap Split — GTT Gives Less VRAM Than Expected
+
+**Symptom:** After configuring dynamic GTT (e.g., `ttm.pages_limit=31457280` for 120 GB), `vulkaninfo` shows two heaps: ~80 GB device-local + ~40 GB host-visible, instead of a single ~121 GB device-local heap. Effective usable VRAM is **less** than the static 96 GB BIOS approach.
+
+**Cause:** RADV's default behavior splits GTT memory 2/3 device-local + 1/3 host-visible. This was a workaround for games with poor memory management (they fill one heap and crash rather than using both). On APUs with unified memory, this split is unnecessary and harmful.
+
+**Fix:** Create `~/.drirc` to enable unified heap mode:
+
+```xml
+<?xml version="1.0" standalone="yes"?>
+<driconf>
+    <device driver="radv">
+        <application name="Default">
+            <option name="radv_enable_unified_heap_on_apu" value="true" />
+        </application>
+    </device>
+</driconf>
+```
+
+No reboot required — takes effect on the next Vulkan application launch. Verify with:
+
+```bash
+vulkaninfo 2>/dev/null | grep -A5 "memoryHeaps:"
+# Should show: 1 heap, ~121 GB, DEVICE_LOCAL
+```
+
+This option was added in [Mesa 22.3 (MR !18884)](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/18884). A copy is provided in `configs/system/drirc`.
+
+**References:** [Mesa source: radv_physical_device.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/amd/vulkan/radv_physical_device.c), [RADV defaults: 00-radv-defaults.conf](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/util/00-radv-defaults.conf)
+
+## 9. Dynamic GTT Segfaults or OOM
 
 **Symptom:** System crashes, segfaults, or OOM kills when using dynamic GTT allocation (`ttm.pages_limit`) at high values (>108 GB).
 
@@ -113,7 +143,7 @@ Monitor OS memory after booting: `free -h`. If "available" is below 2 GB during 
 
 **References:** [Jeff Geerling's testing](https://www.jeffgeerling.com/blog/2025/increasing-vram-allocation-on-amd-ai-apus-under-linux/), [Framework community](https://community.frame.work/t/igpu-vram-how-much-can-be-assigned/73081)
 
-## 9. Slow Model Loading on Vulkan (>64 GB)
+## 10. Slow Model Loading on Vulkan (>64 GB)
 
 **Symptom:** Model loading takes significantly longer than expected (several minutes instead of ~90 seconds) when the model exceeds ~64 GB.
 
@@ -121,7 +151,7 @@ Monitor OS memory after booting: `free -h`. If "available" is below 2 GB during 
 
 **Workaround:** This primarily affects initial load time, not inference speed. Wait for the load to complete — once loaded, inference runs at normal speed. Newer Mesa/RADV versions may improve this.
 
-## 10. ROCm/HIP Build Issues
+## 11. ROCm/HIP Build Issues
 
 **Symptom:** Build failures or runtime errors when compiling llama.cpp with HIP support.
 

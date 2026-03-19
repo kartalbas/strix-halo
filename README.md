@@ -11,7 +11,7 @@ Run [**MiniMax M2.5 229B**](https://huggingface.co/MiniMaxAI) — the 229-billio
 | Quantization | UD-Q6_K_XL via [unsloth](https://huggingface.co/unsloth/MiniMax-M2.5-GGUF) (~181 GB GGUF) |
 | Nodes | 2x [Minisforum MS-S1 MAX](https://www.minisforum.com/) |
 | CPU | AMD Ryzen AI MAX+ 395 (Strix Halo) — 16C/32T Zen 5 |
-| iGPU | Radeon 8060S — 40 CUs, RDNA 3.5, up to 112 GB VRAM per node |
+| iGPU | Radeon 8060S — 40 CUs, RDNA 3.5, up to 121 GB VRAM per node ([dynamic GTT + .drirc](docs/hardware.md#approach-2-dynamic-gtt-advanced--more-vram)) |
 | Memory | 128 GB LPDDR5x-8000 unified memory per node (~256 GB/s) |
 | Backend | Vulkan (RADV / Mesa) — no ROCm or CUDA required |
 | Interconnect | USB4 v2 Thunderbolt (rear ports), ~38 Gbps measured |
@@ -74,7 +74,7 @@ Power on each machine and enter BIOS setup (press `DEL` during POST). For BIOS u
    ```
    Advanced → AMD CBS → NBIO → GFX Configuration → UMA Frame Buffer Size → 96GB
    ```
-   This allocates 96 GB to the iGPU and leaves 32 GB for the OS. For more VRAM (104-112 GB) using dynamic GTT allocation via kernel parameters, see [docs/hardware.md](docs/hardware.md#approach-2-dynamic-gtt-advanced--more-vram).
+   This allocates 96 GB to the iGPU and leaves 32 GB for the OS. For more VRAM (up to 121 GB) using dynamic GTT allocation via kernel parameters + `.drirc`, see [docs/hardware.md](docs/hardware.md#approach-2-dynamic-gtt-advanced--more-vram).
 
 2. **Enable Thunderbolt** (should be enabled by default):
    ```
@@ -615,6 +615,7 @@ The config files in `configs/` are provided as **reference examples only**. You 
 - `configs/system/99-thunderbolt-tcp.conf` — TCP tuning sysctl values
 - `configs/system/rdma-rxe.service` — Soft-RoCE RDMA service
 - `configs/system/thunderbolt-rdma.conf` — kernel module auto-load config
+- `configs/system/drirc` — Mesa/RADV unified heap config (install to `~/.drirc`, required for dynamic GTT)
 
 ---
 
@@ -762,6 +763,7 @@ Both GPUs should show high VRAM usage (~89-93 GB each) when the model is loaded.
 | TCP tuning | `/etc/sysctl.d/99-thunderbolt-tcp.conf` | Thunderbolt TCP optimization |
 | RDMA service | `/etc/systemd/system/rdma-rxe.service` | Soft-RoCE RDMA device creation |
 | Module autoload | `/etc/modules-load.d/thunderbolt-rdma.conf` | Kernel module auto-load |
+| Mesa/RADV config | `~/.drirc` | Unified Vulkan heap for dynamic GTT (see [docs/hardware.md](docs/hardware.md#step-3--critical-enable-unified-vulkan-heap-drirc)) |
 
 ---
 
@@ -870,6 +872,7 @@ For detailed benchmark results across different context sizes, quantizations, an
 | Bandwidth < 20 Gbps | Using front USB4 v1 port | Move cable to rear USB4 v2 port |
 | RPC timeout on startup | max2 RPC not started or firewall blocking | Check `dist-status`, verify port 50052 is open |
 | `VRAM allocation failed` | UMA frame buffer not set correctly | Static: set to 96 GB in BIOS. Dynamic GTT: check `ttm.pages_limit` kernel param. See [docs/hardware.md](docs/hardware.md) |
+| Vulkan shows less VRAM than expected with GTT | Missing `~/.drirc` — RADV splits GTT into 2/3 device-local + 1/3 host | Install `configs/system/drirc` to `~/.drirc`. See [docs/hardware.md](docs/hardware.md#step-3--critical-enable-unified-vulkan-heap-drirc) |
 | Segfault or crash on load | Missing `--no-mmap` flag | Ensure `--no-mmap` is set (automatic with `dist-install`) |
 | Double VRAM usage on max1 | `GGML_VK_VISIBLE_DEVICES` not empty | Ensure the env var is set to empty string (automatic with `dist-install`) |
 | Slow generation (<8 tok/s) | KV cache using f16 instead of q8_0 | `~/llm-server.sh set kv-cache q8_0` then `dist-install` and `dist-restart` |

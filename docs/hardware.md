@@ -49,12 +49,12 @@ Instead of reserving a fixed 96 GB in BIOS, set a small BIOS reservation and let
 
 Since all memory is physically the same LPDDR5x-8000, there is **no performance difference** between static UMA and dynamic GTT allocation — both provide the same ~256 GB/s bandwidth.
 
-**Step 1 — BIOS: Set UMA to 512 MB**
+**Step 1 — BIOS: Set UMA to 1 GB (or 512 MB)**
 
 1. Enter BIOS setup (press DEL during POST).
 2. Navigate to **Advanced** > **AMD CBS** > **NBIO** > **GFX Configuration**.
 3. Set **iGPU Configuration** to **UMA_Specified**.
-4. Set **UMA Frame Buffer Size** to **512M**.
+4. Set **UMA Frame Buffer Size** to **1G** (some boards don't allow lower than 1 GB).
 5. Ensure **Above 4G Decoding** and **Resizable BAR** are enabled.
 6. Save and exit.
 
@@ -63,7 +63,10 @@ Since all memory is physically the same LPDDR5x-8000, there is **no performance 
 The `ttm.pages_limit` kernel parameter controls how many 4 KB pages the GPU driver can map from system RAM. The older `amdgpu.gttsize` parameter still works but is [deprecated](https://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg117333.html).
 
 ```bash
-# For 112 GB GPU-accessible memory (recommended — leaves 16 GB for OS):
+# For 120 GB GPU-accessible memory (leaves 8 GB for OS — tested stable on single-node):
+sudo grubby --update-kernel=ALL --args="ttm.pages_limit=31457280"
+
+# For 112 GB (safer — leaves 16 GB for OS):
 sudo grubby --update-kernel=ALL --args="ttm.pages_limit=29360128"
 
 # For 104 GB (conservative — leaves 24 GB for OS):
@@ -72,21 +75,54 @@ sudo grubby --update-kernel=ALL --args="ttm.pages_limit=27262976"
 sudo reboot
 ```
 
-The formula: `desired_GB × 1024 × 1024 / 4 = pages`. For 112 GB: `112 × 1024 × 1024 / 4 = 29,360,128`.
+The formula: `desired_GB × 1024 × 1024 / 4 = pages`. For 120 GB: `120 × 1024 × 1024 / 4 = 31,457,280`.
 
-**Step 3 — Verify**
+**Step 3 — CRITICAL: Enable unified Vulkan heap (`.drirc`)**
 
-After reboot, check the GPU sees the expanded memory:
+By default, the RADV Vulkan driver splits GTT memory into two heaps: 2/3 device-local + 1/3 host-visible. This means a 120 GB GTT allocation only gives ~80 GB of usable device-local VRAM — **worse than the static 96 GB BIOS approach**.
 
-```bash
-vulkaninfo | grep -i "Heap size"
-# Should show a heap close to your configured size
+The fix is a Mesa drirc option that tells RADV to expose all memory as a single device-local heap. This is safe on APUs because all memory is physically the same LPDDR5x — the split only exists as a workaround for poorly written games.
 
-# Or check via sysfs:
-cat /sys/class/drm/card*/device/mem_info_vram_total
+Create `~/.drirc` on each node:
+
+```xml
+<?xml version="1.0" standalone="yes"?>
+<driconf>
+    <device driver="radv">
+        <application name="Default">
+            <option name="radv_enable_unified_heap_on_apu" value="true" />
+        </application>
+    </device>
+</driconf>
 ```
 
-**Tested limits on Strix Halo (128 GB RAM):**
+This option was added in [Mesa 22.3](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/18884) and is present in all recent Mesa versions. It is already used by default for some games (e.g., Red Dead Redemption 2) in `/usr/share/drirc.d/00-radv-defaults.conf`. No reboot required — takes effect on the next Vulkan application launch.
+
+> **Without this step**, the GTT trick is counterproductive: you get ~80 GB device-local instead of 96 GB. **With this step**, all ~121 GB is exposed as a single device-local heap.
+
+**Step 4 — Verify**
+
+After reboot (for the kernel parameter) and creating `.drirc` (no reboot needed):
+
+```bash
+# Check Vulkan sees a single large heap:
+vulkaninfo 2>/dev/null | grep -A5 "memoryHeaps:"
+# Expected: 1 heap, ~121 GB, DEVICE_LOCAL
+
+# Check OS memory:
+free -h
+# Expected: ~7-8 GB total (for 120 GB GTT) or ~16 GB (for 112 GB GTT)
+```
+
+**Tested results on MS-S1 MAX (128 GB, BIOS UMA = 1 GB):**
+
+| ttm.pages_limit | GTT Size | Vulkan Heap (without .drirc) | Vulkan Heap (with .drirc) | OS RAM |
+|-----------------|----------|------------------------------|---------------------------|--------|
+| 31,457,280 | 120 GB | 80 GB device-local + 40 GB host | **121 GB single device-local** | 8 GB |
+| 29,360,128 | 112 GB | ~75 GB device-local + 37 GB host | **~113 GB single device-local** | 16 GB |
+| 27,262,976 | 104 GB | ~69 GB device-local + 35 GB host | **~105 GB single device-local** | 24 GB |
+
+**Community-tested stability limits:**
 
 | Target VRAM | ttm.pages_limit | OS RAM Left | Status |
 |-------------|-----------------|-------------|--------|
@@ -94,27 +130,25 @@ cat /sys/class/drm/card*/device/mem_info_vram_total
 | 108 GB | 28,311,552 | 20 GB | Stable ([Geerling](https://www.jeffgeerling.com/blog/2025/increasing-vram-allocation-on-amd-ai-apus-under-linux)) |
 | 112 GB | 29,360,128 | 16 GB | Stable ([CachyOS guide](https://brian.th3rogers.com/posts/strixhalo-cachyos/)) |
 | 115 GB | 30,146,560 | 13 GB | Used by [Framework community](https://community.frame.work/t/igpu-vram-how-much-can-be-assigned/73081) |
-| 120 GB | 31,457,280 | 8 GB | Risky — tight for OS + llama-server |
+| 120 GB | 31,457,280 | 8 GB | Tested stable on single-node (this project) |
 
-> **Warning**: Jeff Geerling reported [segfaults at 110 GB](https://www.jeffgeerling.com/blog/2025/increasing-vram-allocation-on-amd-ai-apus-under-linux) during large model loads. Our testing shows 112 GB stable, but your mileage may vary. Start conservative and increase if stable.
+> **Warning**: Jeff Geerling reported [segfaults at 110 GB](https://www.jeffgeerling.com/blog/2025/increasing-vram-allocation-on-amd-ai-apus-under-linux) during large model loads. With the unified heap fix, the full GTT pool is usable. Start conservative and increase if stable.
 
-**What this means for distributed inference:**
+**What this means for inference:**
 
-| Allocation | Per Node | Total (2 nodes) | Model (~181 GB) | KV Cache Headroom |
-|-----------|----------|-----------------|-----------------|-------------------|
-| Static 96 GB | 96 GB | 192 GB | Fits | ~6 GB/node |
-| Dynamic 104 GB | 104 GB | 208 GB | Fits | ~14 GB/node |
-| Dynamic 112 GB | 112 GB | 224 GB | Fits | ~22 GB/node |
+| Allocation | VRAM per Node | Single-Node | Dual-Node Total | MiniMax M2.5 (~181 GB) |
+|-----------|--------------|-------------|-----------------|------------------------|
+| Static 96 GB | 96 GB | 96 GB | 192 GB | Fits (dual only) |
+| Dynamic 112 GB | 113 GB | 113 GB | 226 GB | Fits (dual only) |
+| Dynamic 120 GB | 121 GB | 121 GB | 242 GB | Fits (dual), more KV headroom |
 
-The extra KV cache headroom enables larger context windows, more parallel slots, or less aggressive KV quantization (f16 instead of q8_0).
-
-> **Note**: With dynamic GTT at 112 GB, each node has only 16 GB for the OS. Our head node uses ~15 GB (llama-server orchestrator, SSH, system services). This is tight but workable. The worker node uses only ~6 GB and has plenty of room. If you run additional services on the head node, consider 104 GB instead.
+The extra headroom enables larger context windows, more parallel slots, or less aggressive KV quantization (f16 instead of q8_0).
 
 #### Which approach to use?
 
-- **New to this setup?** Start with static 96 GB. It's simple and works.
-- **Need more VRAM?** (larger context, more parallel slots, larger quant) — use dynamic GTT at 104-112 GB.
-- **Single-node setup?** Dynamic GTT is more valuable since you can't split across two machines.
+- **New to this setup?** Start with static 96 GB in BIOS. It's simple, one setting, no `.drirc` needed.
+- **Need more VRAM?** (larger context, more parallel slots, larger quant) — use dynamic GTT + `.drirc`. We recommend 120 GB for single-node or 112 GB for dual-node (where the head node runs more services).
+- **Single-node setup?** Dynamic GTT at 120 GB is ideal — you get 121 GB usable VRAM with 8 GB OS RAM, which is sufficient when only running llama-server.
 
 ### Kernel Boot Parameters
 
@@ -177,6 +211,7 @@ The Thunderbolt link is the primary data path for distributed llama.cpp inferenc
 - [CachyOS Strix Halo LLM Configuration](https://brian.th3rogers.com/posts/strixhalo-cachyos/) — 112 GB TTM configuration guide.
 - [Setting up unified memory for Strix Halo on Ubuntu 25.04/25.10](https://dev.webonomic.nl/setting-up-unified-memory-for-strix-halo-correctly-on-ubuntu-25-04-or-25-10) — TTM parameter documentation with Ubuntu.
 - [amdgpu.gttsize deprecation (kernel mailing list)](https://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg117333.html) — Announcement that `amdgpu.gttsize` is deprecated in favor of `ttm.pages_limit`.
+- [Mesa MR !18884: radv_enable_unified_heap_on_apu](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/18884) — The Mesa merge request that added the unified heap option for APUs. Without this, RADV splits GTT into 2/3 device-local + 1/3 host-visible, reducing usable VRAM.
 
 ### Strix Halo LLM Performance
 

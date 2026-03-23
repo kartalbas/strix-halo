@@ -458,6 +458,9 @@ _do_download() {
     model_name=$(echo "$repo" | sed 's|.*/||; s|-GGUF$||; s|-gguf$||' | tr '[:upper:]' '[:lower:]')
     local local_dir="$MODELS_DIR/$model_name"
 
+    # Ensure local_dir exists before searching
+    mkdir -p "$local_dir"
+
     # Check if already downloaded
     local existing_gguf=""
     if [[ -d "$local_dir/$quant" ]]; then
@@ -549,10 +552,15 @@ _register_model() {
     local key="${model_name}-$(echo "$quant" | tr '[:upper:]' '[:lower:]')"
 
     ensure_dirs
+    # Use quant subdirectory as local_dir if it exists
+    local reg_dir="$local_dir"
+    if [[ -d "$local_dir/$quant" ]]; then
+        reg_dir="$local_dir/$quant"
+    fi
     cat > "$REGISTRY_DIR/$key.conf" <<EOF
 repo=$repo
 quant=$quant
-local_dir=$local_dir
+local_dir=$reg_dir
 gguf=$gguf_file
 EOF
 
@@ -1278,35 +1286,71 @@ cmd_gpu() {
     fi
 
     _gpu_snapshot() {
-        local vram_used vram_total gpu_load power_uw power_w freq_hz freq_ghz temp_mc temp_c
+        local vram_used vram_total gtt_used gtt_total gpu_load power_uw freq_hz temp_mc
         vram_used=$(cat "$gpu_dev/mem_info_vram_used" 2>/dev/null || echo 0)
         vram_total=$(cat "$gpu_dev/mem_info_vram_total" 2>/dev/null || echo 1)
+        gtt_used=$(cat "$gpu_dev/mem_info_gtt_used" 2>/dev/null || echo 0)
+        gtt_total=$(cat "$gpu_dev/mem_info_gtt_total" 2>/dev/null || echo 0)
         gpu_load=$(cat "$gpu_dev/gpu_busy_percent" 2>/dev/null || echo 0)
         power_uw=$(cat "$hwmon/power1_average" 2>/dev/null || echo 0)
         freq_hz=$(cat "$hwmon/freq1_input" 2>/dev/null || echo 0)
         temp_mc=$(cat "$hwmon/temp1_input" 2>/dev/null || echo 0)
 
+        # Read CPU RAM from /proc/meminfo
+        local mem_total mem_avail mem_used
+        mem_total=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+        mem_avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+        mem_used=$((mem_total - mem_avail))
+
         awk -v vu="$vram_used" -v vt="$vram_total" \
+            -v gu="$gtt_used" -v gt="$gtt_total" \
             -v gpu_load="$gpu_load" -v pw="$power_uw" \
-            -v freq="$freq_hz" -v temp="$temp_mc" '
+            -v freq="$freq_hz" -v temp="$temp_mc" \
+            -v mu="$mem_used" -v mt="$mem_total" '
         BEGIN {
-            vu_gb  = vu   / 1073741824
-            vt_gb  = vt   / 1073741824
-            vram_p = int(vu / vt * 100)
+            # GPU memory: use VRAM + GTT combined if GTT is present
+            if (gt > 0) {
+                gpu_used_b = vu + gu
+                gpu_total_b = vt + gt
+            } else {
+                gpu_used_b = vu
+                gpu_total_b = vt
+            }
+            gpu_used_gb  = gpu_used_b  / 1073741824
+            gpu_total_gb = gpu_total_b / 1073741824
+            gpu_p = (gpu_total_b > 0) ? int(gpu_used_b / gpu_total_b * 100) : 0
+
             pw_w   = pw   / 1000000
             freq_g = freq / 1000000000
             temp_c = temp / 1000
 
+            gpu_all_kb = (vt + gt) / 1024
+            os_total = mt - gpu_all_kb
+            if (os_total < 1048576) os_total = mt
+            os_avail = mt - mu
+            os_used = os_total - os_avail
+            if (os_used < 0) os_used = 0
+            if (os_used > os_total) os_used = os_total
+            ram_used_gb  = os_used / 1048576
+            ram_total_gb = os_total / 1048576
+            ram_p = (os_total > 0) ? int(os_used / os_total * 100) : 0
+
             bar_len = 30
-            vram_bar = int(vram_p  * bar_len / 100)
-            load_bar = int(gpu_load * bar_len / 100)
 
-            vbar = ""; for(i=0;i<vram_bar;i++) vbar = vbar "█"
-            for(i=vram_bar;i<bar_len;i++) vbar = vbar "░"
-            lbar = ""; for(i=0;i<load_bar;i++) lbar = lbar "█"
-            for(i=load_bar;i<bar_len;i++) lbar = lbar "░"
+            gpu_bar_n = int(gpu_p * bar_len / 100)
+            gbar = ""; for(i=0;i<gpu_bar_n;i++) gbar = gbar "█"
+            for(i=gpu_bar_n;i<bar_len;i++) gbar = gbar "░"
 
-            printf "  VRAM  [%s] %5.1f / %.0f GB (%d%%)\n", vbar, vu_gb, vt_gb, vram_p
+            load_bar_n = int(gpu_load * bar_len / 100)
+            lbar = ""; for(i=0;i<load_bar_n;i++) lbar = lbar "█"
+            for(i=load_bar_n;i<bar_len;i++) lbar = lbar "░"
+
+            ram_bar_n = int(ram_p * bar_len / 100)
+            rbar = ""; for(i=0;i<ram_bar_n;i++) rbar = rbar "█"
+            for(i=ram_bar_n;i<bar_len;i++) rbar = rbar "░"
+
+            printf "  VRAM  [%s] %5.1f / %.0f GB (%d%%)\n", gbar, gpu_used_gb, gpu_total_gb, gpu_p
+            printf "  RAM   [%s] %5.1f / %.0f GB (%d%%)\n", rbar, ram_used_gb, ram_total_gb, ram_p
             printf "  Load  [%s] %d%%\n",                   lbar, gpu_load
             printf "  Power  %6.1f W\n",  pw_w
             printf "  Clock  %6.2f GHz\n", freq_g
